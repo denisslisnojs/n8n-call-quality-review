@@ -1,0 +1,1136 @@
+{
+  "name": "Call review — all-in-one",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Zvana ieraksta analīze",
+        "formDescription": "Augšupielādējiet vienu vai vairākus zvanu ierakstus (līdz 10 failiem vienā reizē, katrs līdz 25 MB). Sistēma katru zvanu atšifrēs, novērtēs pēc kritērijiem un saglabās tabulā, beigās parādīs kopsavilkumu. Apstrāde aizņem apmēram 30 sekundes uz vienu zvanu — neaizveriet lapu.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Zvanu datums (ja tukšs — šodiena)",
+              "fieldType": "date",
+              "fieldName": "call_date"
+            },
+            {
+              "fieldLabel": "Sarunu valoda",
+              "fieldType": "dropdown",
+              "fieldName": "language",
+              "defaultValue": "automātiski",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "automātiski"
+                  },
+                  {
+                    "option": "latviešu"
+                  },
+                  {
+                    "option": "krievu"
+                  },
+                  {
+                    "option": "angļu"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Zvanu ieraksti",
+              "fieldType": "file",
+              "fieldName": "audio",
+              "acceptFileTypes": ".mp3,.m4a,.wav,.ogg,.webm,.mp4,.mpeg,.mpga,.flac",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "buttonLabel": "Analizēt zvanu",
+          "path": "zvanu-analize",
+          "useWorkflowTimezone": true
+        }
+      },
+      "id": "8c8deb47-a37c-4817-a747-8957bc794ec3",
+      "name": "Call Upload Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        368
+      ],
+      "webhookId": "2b431876-e671-4418-8c4e-dcb8e9942dd8"
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "call_reviews",
+        "columns": {
+          "column": [
+            {
+              "name": "call_date"
+            },
+            {
+              "name": "uploaded_at"
+            },
+            {
+              "name": "employee"
+            },
+            {
+              "name": "file_name"
+            },
+            {
+              "name": "language"
+            },
+            {
+              "name": "status"
+            },
+            {
+              "name": "duration_min",
+              "type": "number"
+            },
+            {
+              "name": "duration_estimated",
+              "type": "boolean"
+            },
+            {
+              "name": "score_percent",
+              "type": "number"
+            },
+            {
+              "name": "criteria_met",
+              "type": "number"
+            },
+            {
+              "name": "criteria_total",
+              "type": "number"
+            },
+            {
+              "name": "call_outcome"
+            },
+            {
+              "name": "outcome_evidence"
+            },
+            {
+              "name": "summary"
+            },
+            {
+              "name": "strengths"
+            },
+            {
+              "name": "missed"
+            },
+            {
+              "name": "cadastral_number"
+            },
+            {
+              "name": "property_area"
+            },
+            {
+              "name": "what_is_sold"
+            },
+            {
+              "name": "price_expectation"
+            },
+            {
+              "name": "next_step"
+            },
+            {
+              "name": "criteria_details"
+            },
+            {
+              "name": "transcript"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      },
+      "id": "ff648d87-966a-4243-81df-c0e5094df859",
+      "name": "Ensure Call Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        64
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $input.first();\nconst form = src.json || {};\nconst binaries = src.binary || {};\nconst keys = Object.keys(binaries);\n\nconst pick = function (names) {\n  for (const k of names) {\n    const v = form[k];\n    if (v !== undefined && v !== null && typeof v !== 'object' && String(v).trim() !== '') return String(v).trim();\n  }\n  return '';\n};\nconst language = pick(['language', 'Sarunu valoda']) || 'automātiski';\nconst callDate = pick(['call_date', 'Zvanu datums (ja tukšs — šodiena)']).slice(0, 10);\n\nconst wavDurationSeconds = function (buf) {\n  if (!buf || buf.length < 44) return null;\n  if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') return null;\n  let offset = 12;\n  let byteRate = 0;\n  while (offset + 8 <= buf.length) {\n    const id = buf.toString('ascii', offset, offset + 4);\n    const size = buf.readUInt32LE(offset + 4);\n    if (id === 'fmt ') byteRate = buf.readUInt32LE(offset + 16);\n    if (id === 'data') {\n      const dataSize = Math.min(size, buf.length - offset - 8);\n      return byteRate > 0 ? dataSize / byteRate : null;\n    }\n    offset += 8 + size + (size % 2);\n  }\n  return null;\n};\n\nconst out = [];\nfor (const key of keys) {\n  const file = binaries[key];\n  const name = String(file.fileName || key);\n  let seconds = null;\n  if (name.toLowerCase().endsWith('.wav') || String(file.mimeType || '').indexOf('wav') !== -1) {\n    try {\n      const buf = await this.helpers.getBinaryDataBuffer(0, key);\n      seconds = wavDurationSeconds(buf);\n    } catch (e) {\n      seconds = null;\n    }\n  }\n  out.push({\n    json: { file_name: name, language: language, call_date: callDate, audio_seconds: seconds },\n    binary: { data: file },\n    pairedItem: { item: 0 }\n  });\n}\nreturn out;"
+      },
+      "id": "259afe09-6e36-4a52-9853-ef22b7d62c36",
+      "name": "Split Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "options": {
+          "language": "={{ $json.language === \"krievu\" ? \"ru\" : ($json.language === \"angļu\" ? \"en\" : ($json.language === \"latviešu\" ? \"lv\" : \"\")) }}",
+          "temperature": 0
+        }
+      },
+      "id": "99b194f1-55b5-41c7-b680-68e0da39f1a7",
+      "name": "Transcribe Call",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        720,
+        368
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "criteria-list",
+              "name": "criteria",
+              "type": "string",
+              "value": "K1 | Darbinieks sasveicinājās ar klientu\nK2 | Darbinieks pastāstīja par uzņēmumu BALTU\nK3 | Darbinieks izstāstīja klientam savu piedāvājumu\nK4 | Darbinieks izskaidroja tālākos soļus\nK5 | Darbinieks atvadījās no klienta"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "3ec5b62c-9bb2-4f86-a79c-323013f13895",
+      "name": "Review Criteria",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        960,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "text": "=Vērtēšanas kritēriji (formāts: ID | kritērijs):\n{{ $json.criteria }}\n\nZvana atšifrējums (bez runātāju atzīmēm):\n\"\"\"\n{{ $json.text }}\n\"\"\"",
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"employee_name\":{\"type\":\"string\",\"description\":\"Darbinieka vārds un uzvārds, ja viņš sarunā to nosauca, vai Nav minēts\"},\"summary\":{\"type\":\"string\",\"description\":\"Zvana kopsavilkums latviski, 2-3 teikumi\"},\"criteria\":{\"type\":\"array\",\"description\":\"Viens ieraksts katram kritērijam no saraksta\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Kritērija ID, piemēram K1\"},\"met\":{\"type\":\"boolean\",\"description\":\"true, ja darbinieks kritēriju izpildīja\"},\"evidence\":{\"type\":\"string\",\"description\":\"Īss citāts no atšifrējuma vai Nav minēts sarunā\"}},\"required\":[\"id\",\"met\",\"evidence\"]}},\"call_outcome\":{\"type\":\"string\",\"enum\":[\"piekrita\",\"padomās\",\"atteicās\",\"nav skaidrs\"],\"description\":\"Klienta lēmums sarunas beigās\"},\"outcome_evidence\":{\"type\":\"string\",\"description\":\"Īss citāts, kas pamato klienta lēmumu, vai Nav minēts\"},\"strengths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Ko darbinieks izdarīja atbilstoši izpildītajiem kritērijiem — fakti, bez padomiem\"},\"missed\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Tikai neizpildītie kritēriji: viens punkts katram kritērijam ar met=false, sākot ar ID (piemēram, K2: ...). Bez punktiem ārpus kritērijiem, bez padomiem. Tukšs saraksts, ja visi kritēriji izpildīti\"},\"cadastral_number\":{\"type\":\"string\",\"description\":\"Kadastra numurs no sarunas vai Nav minēts\"},\"property_area\":{\"type\":\"string\",\"description\":\"Platība no sarunas vai Nav minēts\"},\"what_is_sold\":{\"type\":\"string\",\"description\":\"Zeme ar mežu, cirsma, lauksaimniecības zeme vai Nav minēts\"},\"price_expectation\":{\"type\":\"string\",\"description\":\"Klienta cenas gaidas vai Nav minēts\"},\"next_step\":{\"type\":\"string\",\"description\":\"Norunātais nākamais solis vai Nav minēts\"}},\"required\":[\"employee_name\",\"summary\",\"criteria\",\"call_outcome\",\"outcome_evidence\",\"strengths\",\"missed\",\"cadastral_number\",\"property_area\",\"what_is_sold\",\"price_expectation\",\"next_step\"]}",
+        "options": {
+          "systemPromptTemplate": "You review the quality of outbound phone calls made by the purchasing department of BALTU, a Latvian company that buys forest properties, standing timber (cutting rights) and agricultural land from private owners.\n\nYou receive the transcript of ONE call, in Latvian, Russian or English, WITHOUT speaker labels. Infer from context which lines belong to the company employee and which to the client.\n\nRules:\n- Evaluate ONLY the employee, ONLY against the listed criteria, ONLY based on what was actually said.\n- Return exactly one criteria entry per listed criterion id. met=true only if the transcript clearly shows it. For evidence give a short quote from the transcript, or \"Nav minēts sarunā\" if not met.\n- missed: exactly one item for EACH criterion with met=false, and nothing else. Start each item with the criterion id (for example \"K2: ...\") and describe factually what was missing in this call. Never add items that are not in the criteria list (for example cadastral number, price or area questions are NOT criteria unless listed). Never give advice, recommendations or suggestions. If all criteria are met, return an empty array.\n- strengths: short factual descriptions of what the employee did, based on the criteria that were met. No advice.\n- Set employee_name to the name the employee introduced themselves with (first and last name if said). If the employee did not say their name, write \"Nav minēts\". Never guess and never use the client's name.\n- Separately set call_outcome to the CLIENT's decision at the end of the call: \"piekrita\" (agreed to the offer or to proceed), \"padomās\" (will think it over or asked for time), \"atteicās\" (refused), \"nav skaidrs\" (unclear). The client's decision is NOT an employee criterion and must not influence the criteria.\n- Do NOT infer or describe emotions, mood, stress or tone of voice of any person. Judge content only.\n- Do NOT invent facts. If information is absent, write \"Nav minēts\".\n- Write all free-text values in Latvian, regardless of the call language. Quotes in evidence stay in the original language. Be specific and descriptive, not preachy.\n- If the transcript is empty or not a sales call, set every criterion to met=false, call_outcome to \"nav skaidrs\" and explain it in summary.",
+          "batching": {
+            "batchSize": 2,
+            "delayBetweenBatches": 0
+          }
+        }
+      },
+      "id": "e794e528-8f91-40d0-b3cc-9790bbae0f32",
+      "name": "Evaluate Call",
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        368
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {
+          "maxTokensToSample": 4096
+        }
+      },
+      "id": "1527e102-7345-4499-8ac4-3c6a72e186f1",
+      "name": "Claude Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        1200,
+        592
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const out = $json.output || null;\nconst split = $('Split Files').item.json || {};\nconst tr = $('Transcribe Call').item.json || {};\nconst transcript = String(tr.text || '');\nconst criteriaText = String($('Review Criteria').item.json.criteria || '');\n\nconst errText = function (e) {\n  if (!e) return '';\n  if (typeof e === 'string') return e;\n  return String(e.message || e.description || JSON.stringify(e));\n};\nconst transcribeError = errText(tr.error);\nconst evaluateError = errText($json.error);\nlet errorMessage = '';\nif (transcribeError) errorMessage = 'Atšifrēšanas kļūda: ' + transcribeError;\nelse if (!transcript.trim()) errorMessage = 'Atšifrējums ir tukšs';\nelse if (evaluateError) errorMessage = 'Novērtēšanas kļūda: ' + evaluateError;\nelse if (!out) errorMessage = 'AI neatgrieza novērtējumu';\nconst failed = errorMessage !== '';\nconst o = out || {};\n\nconst defined = criteriaText.split('\\n').map(function (line) {\n  const parts = line.split('|');\n  return { id: (parts[0] || '').trim(), text: parts.slice(1).join('|').trim() };\n}).filter(function (c) { return c.id && c.text; });\n\nconst answers = Array.isArray(o.criteria) ? o.criteria : [];\nconst findAnswer = function (id) {\n  return answers.find(function (a) { return String(a.id || '').trim().toUpperCase() === id.toUpperCase(); });\n};\nconst rows = defined.map(function (c) {\n  const a = findAnswer(c.id);\n  return { id: c.id, text: c.text, met: !failed && !!(a && a.met === true), evidence: a && a.evidence ? String(a.evidence) : 'Nav novērtēts' };\n});\nconst total = rows.length;\nconst met = rows.filter(function (r) { return r.met; }).length;\nconst score = !failed && total > 0 ? Math.round((met / total) * 100) : 0;\n\nconst outcomeAllowed = ['piekrita', 'padomās', 'atteicās', 'nav skaidrs'];\nconst outcomeRaw = String(o.call_outcome || '').trim().toLowerCase();\nconst callOutcome = !failed && outcomeAllowed.indexOf(outcomeRaw) >= 0 ? outcomeRaw : 'nav skaidrs';\n\nconst clean = function (s) { const v = String(s || '').trim(); return v || 'Nav minēts'; };\nconst esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };\nconst br = function (s) { return esc(s).split('\\n').join('<br>'); };\nconst listText = function (arr) {\n  return Array.isArray(arr) && arr.length ? arr.map(function (s) { return '• ' + s; }).join('\\n') : '—';\n};\n\nconst riga = $now.setZone('Europe/Riga');\nconst callDate = String(split.call_date || '').slice(0, 10) || riga.toFormat('yyyy-LL-dd');\nconst language = String(split.language || '');\nconst fileName = String(split.file_name || '');\nconst employee = failed ? 'Nav zināms' : clean(o.employee_name);\n\nconst audioSeconds = Number(split.audio_seconds);\nconst wordCount = transcript.trim() ? transcript.trim().split(/\\s+/).length : 0;\nconst durationEstimated = !(audioSeconds > 0);\nconst durationMin = durationEstimated ? Math.round((wordCount / 130) * 10) / 10 : Math.round((audioSeconds / 60) * 10) / 10;\n\nconst strengths = failed ? '—' : listText(o.strengths);\nconst missed = failed ? '—' : listText(o.missed);\nconst outcomeEvidence = failed ? '—' : clean(o.outcome_evidence);\nconst summary = failed ? errorMessage : String(o.summary || '');\nconst criteriaDetails = failed ? '—' : rows.map(function (r) { return (r.met ? '✔ ' : '✘ ') + r.id + ' ' + r.text + ' — ' + r.evidence; }).join('\\n');\nconst info = function (v) { return failed ? '—' : clean(v); };\n\nlet reportHtml;\nif (failed) {\n  reportHtml = '<div style=\"border-top:1px solid #ddd;padding-top:8px;margin-top:16px\">' +\n    '<h3>' + esc(fileName) + ' — neizdevās apstrādāt</h3>' +\n    '<p style=\"color:#b00020\">' + esc(errorMessage) + '</p></div>';\n} else {\n  reportHtml = '<div style=\"border-top:1px solid #ddd;padding-top:8px;margin-top:16px\">' +\n    '<h3>' + esc(fileName) + ' — ' + score + '% (' + met + ' no ' + total + ')</h3>' +\n    '<p><b>Darbinieks:</b> ' + esc(employee) + ' · <b>Ilgums:</b> ' + durationMin + ' min' + (durationEstimated ? ' (aptuveni)' : '') + ' · <b>Klienta lēmums:</b> ' + esc(callOutcome) + ' — ' + esc(outcomeEvidence) + '</p>' +\n    '<p>' + br(summary) + '</p>' +\n    '<p><b>Kritēriji</b><br>' + br(criteriaDetails) + '</p>' +\n    '<p><b>Ko izdarīja labi</b><br>' + br(strengths) + '</p>' +\n    '<p><b>Ko aizmirsa vai neizdarīja</b><br>' + br(missed) + '</p>' +\n    '<p><b>Iegūtā informācija</b><br>' +\n    'Kadastra nr.: ' + esc(info(o.cadastral_number)) + '<br>' +\n    'Platība: ' + esc(info(o.property_area)) + '<br>' +\n    'Ko pārdod: ' + esc(info(o.what_is_sold)) + '<br>' +\n    'Cenas gaidas: ' + esc(info(o.price_expectation)) + '<br>' +\n    'Nākamais solis: ' + esc(info(o.next_step)) + '</p></div>';\n}\n\nreturn {\n  json: {\n    call_date: callDate,\n    uploaded_at: riga.toFormat('yyyy-LL-dd HH:mm'),\n    employee: employee,\n    file_name: fileName,\n    language: language,\n    status: failed ? 'kļūda' : 'ok',\n    duration_min: durationMin,\n    duration_estimated: durationEstimated,\n    score_percent: score,\n    criteria_met: met,\n    criteria_total: total,\n    call_outcome: callOutcome,\n    outcome_evidence: outcomeEvidence,\n    summary: summary,\n    strengths: strengths,\n    missed: missed,\n    cadastral_number: info(o.cadastral_number),\n    property_area: info(o.property_area),\n    what_is_sold: info(o.what_is_sold),\n    price_expectation: info(o.price_expectation),\n    next_step: info(o.next_step),\n    criteria_details: criteriaDetails,\n    transcript: transcript,\n    report_html: reportHtml\n  }\n};"
+      },
+      "id": "9c5ff6f9-8a09-4279-a3a9-5090f010339a",
+      "name": "Calculate Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "call_reviews"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "call_date": "={{ $json.call_date }}",
+            "uploaded_at": "={{ $json.uploaded_at }}",
+            "employee": "={{ $json.employee }}",
+            "file_name": "={{ $json.file_name }}",
+            "language": "={{ $json.language }}",
+            "status": "={{ $json.status }}",
+            "duration_min": "={{ $json.duration_min }}",
+            "duration_estimated": "={{ $json.duration_estimated }}",
+            "score_percent": "={{ $json.score_percent }}",
+            "criteria_met": "={{ $json.criteria_met }}",
+            "criteria_total": "={{ $json.criteria_total }}",
+            "call_outcome": "={{ $json.call_outcome }}",
+            "outcome_evidence": "={{ $json.outcome_evidence }}",
+            "summary": "={{ $json.summary }}",
+            "strengths": "={{ $json.strengths }}",
+            "missed": "={{ $json.missed }}",
+            "cadastral_number": "={{ $json.cadastral_number }}",
+            "property_area": "={{ $json.property_area }}",
+            "what_is_sold": "={{ $json.what_is_sold }}",
+            "price_expectation": "={{ $json.price_expectation }}",
+            "next_step": "={{ $json.next_step }}",
+            "criteria_details": "={{ $json.criteria_details }}",
+            "transcript": "={{ $json.transcript }}"
+          },
+          "schema": [
+            {
+              "id": "call_date",
+              "displayName": "call_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "uploaded_at",
+              "displayName": "uploaded_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "employee",
+              "displayName": "employee",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "file_name",
+              "displayName": "file_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "language",
+              "displayName": "language",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "duration_min",
+              "displayName": "duration_min",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "duration_estimated",
+              "displayName": "duration_estimated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score_percent",
+              "displayName": "score_percent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "criteria_met",
+              "displayName": "criteria_met",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "criteria_total",
+              "displayName": "criteria_total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "call_outcome",
+              "displayName": "call_outcome",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "outcome_evidence",
+              "displayName": "outcome_evidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "strengths",
+              "displayName": "strengths",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "missed",
+              "displayName": "missed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "cadastral_number",
+              "displayName": "cadastral_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "property_area",
+              "displayName": "property_area",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "what_is_sold",
+              "displayName": "what_is_sold",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "price_expectation",
+              "displayName": "price_expectation",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "next_step",
+              "displayName": "next_step",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "criteria_details",
+              "displayName": "criteria_details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "transcript",
+              "displayName": "transcript",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4325d79a-42c6-4c71-ad3f-458b3611f45f",
+      "name": "Save to Data Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1680,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const calls = $('Calculate Score').all().map(function (i) { return i.json; });\nconst ok = calls.filter(function (c) { return c.status === 'ok'; });\nconst failed = calls.filter(function (c) { return c.status !== 'ok'; });\n\nconst esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };\nconst sum = function (list, field) { return list.reduce(function (s, c) { return s + (Number(c[field]) || 0); }, 0); };\n\nconst totalMin = Math.round(sum(ok, 'duration_min') * 10) / 10;\nconst avgScore = ok.length ? Math.round(sum(ok, 'score_percent') / ok.length) : 0;\nconst anyEstimated = ok.some(function (c) { return c.duration_estimated; });\nconst outcomes = { 'piekrita': 0, 'padomās': 0, 'atteicās': 0, 'nav skaidrs': 0 };\nok.forEach(function (c) { outcomes[c.call_outcome] = (outcomes[c.call_outcome] || 0) + 1; });\n\nconst cell = 'padding:4px 8px;border-bottom:1px solid #eee;text-align:left';\nconst tableRows = calls.map(function (c) {\n  const isOk = c.status === 'ok';\n  return '<tr>' +\n    '<td style=\"' + cell + '\">' + esc(c.file_name) + '</td>' +\n    '<td style=\"' + cell + '\">' + esc(c.employee) + '</td>' +\n    '<td style=\"' + cell + '\">' + (isOk ? c.score_percent + '%' : 'kļūda') + '</td>' +\n    '<td style=\"' + cell + '\">' + (isOk ? esc(c.call_outcome) : '—') + '</td>' +\n    '<td style=\"' + cell + '\">' + (isOk ? c.duration_min + ' min' + (c.duration_estimated ? '*' : '') : '—') + '</td>' +\n    '</tr>';\n}).join('');\n\nconst html = '<div style=\"font-family:Arial,sans-serif;max-width:760px;margin:0 auto;text-align:left\">' +\n  '<h2>Apstrādāti zvani: ' + ok.length + ' no ' + calls.length + '</h2>' +\n  '<p><b>Kopējais ilgums:</b> ' + totalMin + ' min · <b>Vidējais rezultāts:</b> ' + avgScore + '%</p>' +\n  '<p><b>Klientu lēmumi:</b> piekrita ' + outcomes['piekrita'] + ' · padomās ' + outcomes['padomās'] + ' · atteicās ' + outcomes['atteicās'] + ' · nav skaidrs ' + outcomes['nav skaidrs'] + '</p>' +\n  (failed.length ? '<p style=\"color:#b00020\"><b>Neizdevās apstrādāt:</b> ' + failed.map(function (c) { return esc(c.file_name); }).join(', ') + '</p>' : '') +\n  '<table style=\"border-collapse:collapse;width:100%;font-size:14px\">' +\n  '<tr><th style=\"' + cell + '\">Fails</th><th style=\"' + cell + '\">Darbinieks</th><th style=\"' + cell + '\">Rezultāts</th><th style=\"' + cell + '\">Klienta lēmums</th><th style=\"' + cell + '\">Ilgums</th></tr>' +\n  tableRows + '</table>' +\n  (anyEstimated ? '<p style=\"color:#666;font-size:12px\">* ilgums aprēķināts aptuveni pēc vārdu skaita</p>' : '') +\n  calls.map(function (c) { return c.report_html; }).join('') +\n  '<p style=\"color:#666;margin-top:16px\">Rezultāti saglabāti tabulā call_reviews. AI vērtējums ir melnraksts — galīgo lēmumu pieņem vadītājs.</p>' +\n  '</div>';\n\nreturn [{ json: { summary_html: html, calls_total: calls.length, calls_ok: ok.length } }];"
+      },
+      "id": "8c32641d-748c-421c-9049-2333334a282e",
+      "name": "Build Summary Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "showText",
+        "responseText": "={{ $json.summary_html }}"
+      },
+      "id": "b7952929-8046-4bed-9cc3-126990ec00d8",
+      "name": "Show Review",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.5,
+      "position": [
+        2160,
+        368
+      ],
+      "webhookId": "11a5ef26-ef93-414c-870d-83a8714a33ad"
+    },
+    {
+      "parameters": {
+        "formTitle": "Zvanu atskaite Excel formātā",
+        "formDescription": "Lejupielādējiet saglabātos zvanu novērtējumus. Atstājiet laukus tukšus, lai saņemtu visus zvanus.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "No datuma",
+              "fieldType": "date",
+              "fieldName": "date_from"
+            },
+            {
+              "fieldLabel": "Līdz datumam",
+              "fieldType": "date",
+              "fieldName": "date_to"
+            },
+            {
+              "fieldLabel": "Darbinieks (neobligāti)",
+              "fieldName": "employee",
+              "placeholder": "Vārds vai uzvārds"
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "buttonLabel": "Lejupielādēt Excel",
+          "path": "zvanu-excel",
+          "useWorkflowTimezone": true
+        }
+      },
+      "id": "6f0c916c-6e11-4afc-bbde-1a07ee0b4532",
+      "name": "Export Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        832
+      ],
+      "webhookId": "f201e5a3-cf11-4116-adf4-082e72dae6e8"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "rr-from",
+              "name": "date_from",
+              "value": "={{ $json.report_date || $json.date_from || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "rr-to",
+              "name": "date_to",
+              "value": "={{ $json.report_date || $json.date_to || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "rr-employee",
+              "name": "employee",
+              "value": "={{ $json.report_date ? '' : ($json.employee || '') }}",
+              "type": "string"
+            },
+            {
+              "id": "rr-type",
+              "name": "run_type",
+              "value": "={{ $json.report_date ? 'email' : 'download' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "85f9b769-b27d-490a-8d5f-364e0fa1c013",
+      "name": "Report Request",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        720,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 18
+            }
+          ]
+        }
+      },
+      "id": "3db024c6-c7f9-4dfd-87a6-7540700bd1f4",
+      "name": "Every Day 18:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        240,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "manager-email",
+              "name": "manager_email",
+              "value": "manager@example.com",
+              "type": "string"
+            },
+            {
+              "id": "report-date",
+              "name": "report_date",
+              "value": "={{ $now.setZone('Europe/Riga').toFormat('yyyy-LL-dd') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c8961ff0-23b0-4332-8823-9f0ea6906a76",
+      "name": "Email Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        1152
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "976fe624-c211-414c-9014-de79c1124fcb",
+      "name": "Send Test Now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        1248
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "call_reviews"
+        },
+        "returnAll": true
+      },
+      "id": "70db71d5-fad8-4824-83e3-20143a22cba6",
+      "name": "Get Call Reviews",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        960,
+        944
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const NL = String.fromCharCode(10);\nconst items = $input.all();\nconst str = function (v) { return v === null || v === undefined ? '' : String(v); };\n\nconst parse = function (line) {\n  const t = line.trim();\n  const mark = t.charAt(0);\n  if (mark !== '✔' && mark !== '✘') return null;\n  const rest = t.slice(1).trim();\n  const sp = rest.indexOf(' ');\n  if (sp < 0) return null;\n  const body = rest.slice(sp + 1);\n  const dash = body.indexOf(' — ');\n  return { id: rest.slice(0, sp), text: (dash >= 0 ? body.slice(0, dash) : body).trim() };\n};\n\nlet latest = null;\nitems.forEach(function (i) {\n  const r = i.json || {};\n  if (r.status === 'kļūda' || !str(r.criteria_details).trim()) return;\n  if (!latest || str(r.uploaded_at) >= str(latest.uploaded_at)) latest = r;\n});\nif (!latest) return items;\n\nconst current = {};\nstr(latest.criteria_details).split(NL).forEach(function (line) {\n  const p = parse(line);\n  if (p) current[p.id] = p.text;\n});\n\nreturn items.map(function (i) {\n  const r = Object.assign({}, i.json);\n  if (r.criteria_details) {\n    r.criteria_details = str(r.criteria_details).split(NL).filter(function (line) {\n      const p = parse(line);\n      return p && current[p.id] === p.text;\n    }).join(NL);\n  }\n  return { json: r };\n});"
+      },
+      "id": "e4e9f553-2f55-4acd-9163-099c726c5919",
+      "name": "Align Criteria",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const NL = String.fromCharCode(10);\nconst SQ = String.fromCharCode(39);\nconst DQ = String.fromCharCode(34);\nconst MAX_CELL = 32000;\n\nconst form = $('Report Request').first().json || {};\nconst str = function (v) { return v === null || v === undefined ? '' : String(v); };\nconst pick = function (keys) {\n  for (const k of keys) {\n    const v = form[k];\n    if (v !== undefined && v !== null && typeof v !== 'object' && String(v).trim() !== '') return String(v).trim();\n  }\n  return '';\n};\nconst dateFrom = pick(['date_from']).slice(0, 10);\nconst dateTo = pick(['date_to']).slice(0, 10);\nconst empFilter = pick(['employee']);\n\nconst known = function (v) {\n  const s = str(v).trim();\n  return s !== '' && s !== '—' && s !== 'Nav minēts' && s !== 'Nav minēts sarunā';\n};\nconst cut = function (v) {\n  const s = str(v);\n  return s.length > MAX_CELL ? s.slice(0, MAX_CELL) + ' …[saīsināts]' : s;\n};\n\nconst parseCriteria = function (details) {\n  const res = [];\n  str(details).split(NL).forEach(function (raw) {\n    const line = raw.trim();\n    const mark = line.charAt(0);\n    if (mark !== '✔' && mark !== '✘') return;\n    const rest = line.slice(1).trim();\n    const sp = rest.indexOf(' ');\n    if (sp < 0) return;\n    const body = rest.slice(sp + 1);\n    const dash = body.indexOf(' — ');\n    res.push({\n      id: rest.slice(0, sp),\n      met: mark === '✔',\n      text: (dash >= 0 ? body.slice(0, dash) : body).trim(),\n      quote: dash >= 0 ? body.slice(dash + 3).trim() : ''\n    });\n  });\n  return res;\n};\n\nconst rows = $input.all()\n  .map(function (i) { return i.json; })\n  .filter(function (r) { return r && r.call_date; })\n  .filter(function (r) {\n    const d = str(r.call_date).slice(0, 10);\n    if (dateFrom && d < dateFrom) return false;\n    if (dateTo && d > dateTo) return false;\n    if (empFilter && str(r.employee).toLowerCase().indexOf(empFilter.toLowerCase()) === -1) return false;\n    return true;\n  });\nrows.forEach(function (r) {\n  r._ok = r.status !== 'kļūda';\n  r._crit = parseCriteria(r.criteria_details);\n  r._byId = {};\n  r._crit.forEach(function (c) { r._byId[c.id] = c; });\n});\nconst sortKey = function (r) { return str(r.call_date).slice(0, 10) + '|' + str(r.uploaded_at) + '|' + str(r.file_name); };\nrows.sort(function (a, b) { const ka = sortKey(a); const kb = sortKey(b); return ka < kb ? -1 : ka > kb ? 1 : 0; });\n\nconst okRows = rows.filter(function (r) { return r._ok; });\nconst failedRows = rows.filter(function (r) { return !r._ok; });\n\nlet latest = null;\nokRows.forEach(function (r) {\n  if (r._crit.length && (!latest || str(r.uploaded_at) >= str(latest.uploaded_at))) latest = r;\n});\nconst shortName = function (text) {\n  const t = text.indexOf('Darbinieks ') === 0 ? text.slice(11) : text;\n  return t.charAt(0).toUpperCase() + t.slice(1);\n};\nconst criteria = latest ? latest._crit.map(function (c) { return { id: c.id, text: c.text, short: shortName(c.text) }; }) : [];\n\n// ---------- XML and styles ----------\nconst xmlEsc = function (v) {\n  const s = str(v);\n  let clean = '';\n  for (let i = 0; i < s.length; i++) {\n    const code = s.charCodeAt(i);\n    if (code < 32 && code !== 9 && code !== 10 && code !== 13) continue;\n    clean += s.charAt(i);\n  }\n  return clean.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split(DQ).join('&quot;').split(SQ).join('&apos;');\n};\n\nconst fontList = [];\nconst fillList = [`<fill><patternFill patternType='none'/></fill>`, `<fill><patternFill patternType='gray125'/></fill>`];\nconst borderList = [`<border><left/><right/><top/><bottom/><diagonal/></border>`, `<border><left/><right/><top/><bottom style='thin'><color rgb='FFD9D9D9'/></bottom><diagonal/></border>`];\nconst xfList = [];\nconst styleCache = {};\nconst listIndex = function (list, xml) {\n  let i = list.indexOf(xml);\n  if (i < 0) { list.push(xml); i = list.length - 1; }\n  return i;\n};\nconst style = function (s) {\n  const key = JSON.stringify(s);\n  if (styleCache[key] !== undefined) return styleCache[key];\n  const font = `<font>${s.bold ? '<b/>' : ''}${s.italic ? '<i/>' : ''}${s.underline ? '<u/>' : ''}<sz val='${s.size || 11}'/><color rgb='FF${s.color || '000000'}'/><name val='Calibri'/><family val='2'/></font>`;\n  const fontId = listIndex(fontList, font);\n  const fillId = s.fill ? listIndex(fillList, `<fill><patternFill patternType='solid'><fgColor rgb='FF${s.fill}'/><bgColor indexed='64'/></patternFill></fill>`) : 0;\n  const borderId = s.border ? 1 : 0;\n  const numFmtId = s.pct ? 9 : 0;\n  const hasAlign = s.wrap || s.h || s.v;\n  const align = hasAlign ? `<alignment${s.h ? ` horizontal='${s.h}'` : ''}${s.v ? ` vertical='${s.v}'` : ''}${s.wrap ? ` wrapText='1'` : ''}/>` : '';\n  const attrs = `numFmtId='${numFmtId}' fontId='${fontId}' fillId='${fillId}' borderId='${borderId}' xfId='0' applyNumberFormat='1' applyFont='1' applyFill='1' applyBorder='1'${hasAlign ? ` applyAlignment='1'` : ''}`;\n  const xf = hasAlign ? `<xf ${attrs}>${align}</xf>` : `<xf ${attrs}/>`;\n  styleCache[key] = listIndex(xfList, xf);\n  return styleCache[key];\n};\nstyle({});\nconst st = function () {\n  const o = {};\n  for (let i = 0; i < arguments.length; i++) Object.assign(o, arguments[i] || {});\n  return style(o);\n};\n\nconst HEADER = { bold: true, color: 'FFFFFF', fill: '1F3A5F', wrap: true, v: 'center' };\nconst GOOD = { fill: 'C6EFCE', color: '006100' };\nconst MID = { fill: 'FFEB9C', color: '9C5700' };\nconst BAD = { fill: 'FFC7CE', color: '9C0006' };\nconst TOTAL = { bold: true, fill: 'E7ECF3' };\nconst KPI = { fill: 'F4F6F9' };\nconst GREY = { fill: 'EDEDED' };\nconst LINE = { border: true };\nconst WRAP = { wrap: true, v: 'top' };\nconst CENTER = { h: 'center', v: 'top' };\nconst PCT = { pct: true };\nconst OUTCOME = { 'piekrita': GOOD, 'padomās': MID, 'atteicās': BAD };\nconst TITLE = { bold: true, size: 16, color: '1F3A5F' };\nconst SECTION = { bold: true, size: 12, color: '1F3A5F' };\nconst NOTE = { color: '666666', italic: true };\nconst scoreStyle = function (p) { return p >= 0.8 ? GOOD : p >= 0.5 ? MID : BAD; };\n\nconst colName = function (n) {\n  let s = '';\n  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }\n  return s;\n};\nconst mergeRange = function (r1, c1, r2, c2) { return colName(c1) + r1 + ':' + colName(c2) + r2; };\nconst makeSheet = function (name) {\n  return { name: name, cells: {}, heights: {}, widths: [], merges: [], freeze: null, filter: null, links: [] };\n};\nconst put = function (sh, r, c, v, s) {\n  if (!sh.cells[r]) sh.cells[r] = {};\n  sh.cells[r][c] = { v: v, s: s || 0 };\n};\nconst headerRow = function (sh, r, titles, height) {\n  const hs = st(HEADER);\n  titles.forEach(function (t, i) { put(sh, r, i + 1, t, hs); });\n  sh.heights[r] = height || 32;\n};\n\nconst round1 = function (x) { return Math.round(x * 10) / 10; };\nconst minutesOf = function (list) { return round1(list.reduce(function (s, r) { return s + (Number(r.duration_min) || 0); }, 0)); };\nconst scoreOf = function (r) { return (Number(r.score_percent) || 0) / 100; };\nconst avgScoreOf = function (list) { return list.length ? list.reduce(function (s, r) { return s + scoreOf(r); }, 0) / list.length : 0; };\n\nconst stats = criteria.map(function (c) {\n  const judged = okRows.filter(function (r) { return r._byId[c.id]; });\n  const missedRows = judged.filter(function (r) { return !r._byId[c.id].met; });\n  const who = [];\n  missedRows.forEach(function (r) { if (who.indexOf(str(r.employee)) < 0) who.push(str(r.employee)); });\n  who.sort();\n  return { c: c, missed: missedRows.length, judged: judged.length, who: who };\n});\nstats.sort(function (a, b) { return b.missed - a.missed || (a.c.id < b.c.id ? -1 : 1); });\n\nconst S1 = makeSheet('Kopsavilkums');\nconst S2 = makeSheet('Kritēriji');\nconst S3 = makeSheet('Zvani');\nconst S4 = makeSheet('Detaļas');\nconst sheets = [S1, S2, S3, S4];\n\nconst nowRiga = $now.setZone('Europe/Riga');\nconst dates = [];\nrows.forEach(function (r) { const d = str(r.call_date).slice(0, 10); if (dates.indexOf(d) < 0) dates.push(d); });\ndates.sort();\nconst rangeText = function (a, b) { return a === b ? a : a + ' — ' + b; };\nconst periodText = dates.length ? rangeText(dates[0], dates[dates.length - 1]) : (dateFrom || dateTo ? rangeText(dateFrom || '…', dateTo || '…') : 'viss periods');\n\n// ---------- Sheet 1: Kopsavilkums ----------\nS1.widths = [14, 24, 10, 11, 11, 12, 11, 11, 10, 10, 10, 11, 9];\nput(S1, 1, 1, 'Zvanu atskaite', st(TITLE));\nput(S1, 2, 1, 'Periods: ' + periodText + (empFilter ? ' · Darbinieks: ' + empFilter : '') + ' · Izveidots: ' + nowRiga.toFormat('yyyy-LL-dd HH:mm'), st({ color: '666666' }));\nput(S1, 3, 1, 'AI vērtējums ir melnraksts — galīgo lēmumu pieņem vadītājs.', st(NOTE));\nput(S1, 4, 1, 'Kritēriju apraksts un skaidrojumi — lapā «Kritēriji»', st({ color: '0563C1', underline: true }));\nS1.links.push({ ref: 'A4', location: SQ + 'Kritēriji' + SQ + '!A1', display: 'Kritēriji' });\nS1.freeze = { row: 4, col: 0 };\n\nlet r1 = 6;\nif (!rows.length) {\n  put(S1, r1, 1, 'Izvēlētajā periodā nav neviena saglabāta zvana.', st({ bold: true }));\n} else {\n  put(S1, r1, 1, 'Galvenie rādītāji', st(SECTION)); r1++;\n  const totalMin = minutesOf(okRows);\n  const avgScore = avgScoreOf(okRows);\n  const agreed = okRows.filter(function (r) { return r.call_outcome === 'piekrita'; }).length;\n  const kpis = [\n    ['Augšupielādēti zvani', rows.length, null, false],\n    ['Veiksmīgi apstrādāti', okRows.length, null, false],\n    ['Neizdevās apstrādāt', failedRows.length, failedRows.length ? BAD : null, false],\n    ['Kopējais ilgums, min', totalMin, null, false],\n    ['Vidējais zvana ilgums, min', okRows.length ? round1(totalMin / okRows.length) : 0, null, false],\n    ['Vidējais rezultāts', avgScore, okRows.length ? scoreStyle(avgScore) : null, true],\n    ['Zvani ar 100% rezultātu', okRows.filter(function (r) { return Number(r.score_percent) === 100; }).length, null, false],\n    ['Klients piekrita', okRows.length ? agreed / okRows.length : 0, null, true]\n  ];\n  kpis.forEach(function (k) {\n    put(S1, r1, 1, k[0], st(KPI));\n    put(S1, r1, 2, '', st(KPI));\n    S1.merges.push(mergeRange(r1, 1, r1, 2));\n    put(S1, r1, 3, k[1], st(KPI, { bold: true, h: 'right' }, k[2] || {}, k[3] ? PCT : {}));\n    if (k[0] === 'Klients piekrita') put(S1, r1, 4, agreed + ' no ' + okRows.length, st({ color: '666666' }));\n    r1++;\n  });\n\n  r1++;\n  put(S1, r1, 1, 'Pa dienām un darbiniekiem', st(SECTION)); r1++;\n  headerRow(S1, r1, ['Datums', 'Darbinieks', 'Zvani', 'Ilgums, min', 'Vid. ilgums, min', 'Vidējais rezultāts', 'Zemākais', 'Augstākais', 'Piekrita', 'Padomās', 'Atteicās', 'Nav skaidrs', 'Kļūdas']); r1++;\n  const summaryLine = function (label1, label2, group, bold) {\n    const ok = group.filter(function (r) { return r._ok; });\n    const scores = ok.map(scoreOf);\n    const mins = minutesOf(ok);\n    const count = function (o) { return ok.filter(function (r) { return r.call_outcome === o; }).length; };\n    const errors = group.length - ok.length;\n    const base = bold ? [LINE, TOTAL] : [LINE];\n    const values = [\n      label1, label2, ok.length, mins, ok.length ? round1(mins / ok.length) : null,\n      scores.length ? scores.reduce(function (s, x) { return s + x; }, 0) / scores.length : null,\n      scores.length ? Math.min.apply(null, scores) : null,\n      scores.length ? Math.max.apply(null, scores) : null,\n      count('piekrita'), count('padomās'), count('atteicās'), count('nav skaidrs'), errors\n    ];\n    values.forEach(function (v, i) {\n      const col = i + 1;\n      let extra = {};\n      if ((col === 6 || col === 7 || col === 8) && v !== null) extra = Object.assign({}, scoreStyle(v), PCT, bold ? { bold: true } : {});\n      if (col === 13 && errors) extra = Object.assign({}, BAD, bold ? { bold: true } : {});\n      put(S1, r1, col, v, st.apply(null, base.concat([extra])));\n    });\n    r1++;\n  };\n  dates.forEach(function (d) {\n    const dayRows = rows.filter(function (r) { return str(r.call_date).slice(0, 10) === d; });\n    const emps = [];\n    dayRows.forEach(function (r) { if (r._ok && emps.indexOf(str(r.employee)) < 0) emps.push(str(r.employee)); });\n    emps.sort();\n    emps.forEach(function (e) { summaryLine(d, e, dayRows.filter(function (r) { return r._ok && str(r.employee) === e; }), false); });\n    const dayFailed = dayRows.filter(function (r) { return !r._ok; });\n    if (dayFailed.length) summaryLine(d, 'Neizdevās apstrādāt', dayFailed, false);\n    summaryLine(d, 'Kopā', dayRows, true);\n  });\n  if (dates.length > 1) summaryLine('Viss periods', 'Kopā', rows, true);\n\n  r1++;\n  put(S1, r1, 1, 'Biežāk neizpildītie kritēriji', st(SECTION)); r1++;\n  headerRow(S1, r1, ['Kritērijs', '', 'Neizpildīts', 'No zvaniem', 'Īpatsvars', 'Kuriem darbiniekiem', '', '', '']);\n  S1.merges.push(mergeRange(r1, 1, r1, 2));\n  S1.merges.push(mergeRange(r1, 6, r1, 9));\n  r1++;\n  stats.forEach(function (s) {\n    const share = s.judged ? s.missed / s.judged : 0;\n    put(S1, r1, 1, s.c.id + ' ' + s.c.short, st(LINE));\n    put(S1, r1, 2, '', st(LINE));\n    S1.merges.push(mergeRange(r1, 1, r1, 2));\n    put(S1, r1, 3, s.missed, st(LINE));\n    put(S1, r1, 4, s.judged, st(LINE));\n    put(S1, r1, 5, share, st(LINE, PCT, s.missed ? (share >= 0.5 ? BAD : MID) : {}));\n    put(S1, r1, 6, s.who.length ? s.who.join(', ') : '—', st(LINE));\n    for (let c = 7; c <= 9; c++) put(S1, r1, c, '', st(LINE));\n    S1.merges.push(mergeRange(r1, 6, r1, 9));\n    r1++;\n  });\n\n  r1++;\n  put(S1, r1, 1, 'Iegūtā informācija sarunās', st(SECTION)); r1++;\n  headerRow(S1, r1, ['Informācija', '', 'Noskaidrots', 'No zvaniem', 'Īpatsvars']);\n  S1.merges.push(mergeRange(r1, 1, r1, 2));\n  r1++;\n  [['Ko pārdod', 'what_is_sold'], ['Platība', 'property_area'], ['Nākamais solis', 'next_step'], ['Cenas gaidas', 'price_expectation'], ['Kadastra numurs', 'cadastral_number']].forEach(function (f) {\n    const n = okRows.filter(function (r) { return known(r[f[1]]); }).length;\n    const share = okRows.length ? n / okRows.length : 0;\n    put(S1, r1, 1, f[0], st(LINE));\n    put(S1, r1, 2, '', st(LINE));\n    S1.merges.push(mergeRange(r1, 1, r1, 2));\n    put(S1, r1, 3, n, st(LINE));\n    put(S1, r1, 4, okRows.length, st(LINE));\n    put(S1, r1, 5, share, st(LINE, PCT, share >= 0.8 ? GOOD : share >= 0.5 ? MID : BAD));\n    r1++;\n  });\n  put(S1, r1, 1, 'Kadastra numuri un adreses no atšifrējuma jāpārbauda — atšifrēšana kļūdās īpašvārdos un skaitļos.', st(NOTE));\n}\n\n// ---------- Sheet 2: Kritēriji ----------\nS2.widths = [14, 40, 11, 13, 55, 55];\nput(S2, 1, 1, 'Vērtēšanas kritēriji un skaidrojumi', st(TITLE));\nput(S2, 2, 1, 'Kritērijus iestata n8n mezglā «Review Criteria», tos var mainīt bez programmēšanas.', st(NOTE));\nlet r2 = 4;\nput(S2, r2, 1, 'Kritēriji', st(SECTION)); r2++;\nheaderRow(S2, r2, ['ID', 'Kritērijs', 'Izpildīts', 'Neizpildīts', 'Piemērs no sarunām: izpildīts', 'Piemērs no sarunām: neizpildīts']); r2++;\nif (!criteria.length) { put(S2, r2, 1, 'Izvēlētajā periodā nav datu par kritērijiem.', st(NOTE)); r2++; }\ncriteria.forEach(function (c) {\n  const judged = okRows.filter(function (r) { return r._byId[c.id]; });\n  const yes = judged.filter(function (r) { return r._byId[c.id].met; });\n  const no = judged.filter(function (r) { return !r._byId[c.id].met; });\n  put(S2, r2, 1, c.id, st(LINE, WRAP, { bold: true }));\n  put(S2, r2, 2, c.text, st(LINE, WRAP));\n  put(S2, r2, 3, yes.length, st(LINE, CENTER));\n  put(S2, r2, 4, no.length, st(LINE, CENTER, no.length ? Object.assign({}, BAD, { bold: true }) : {}));\n  put(S2, r2, 5, yes.length ? str(yes[0].employee) + ': ' + yes[0]._byId[c.id].quote : '—', st(LINE, WRAP, yes.length ? GOOD : {}));\n  put(S2, r2, 6, no.length ? str(no[0].employee) + ': ' + no[0]._byId[c.id].quote : '—', st(LINE, WRAP, no.length ? BAD : {}));\n  r2++;\n});\nput(S2, r2, 1, 'Ja periodā kritēriji tika mainīti, atskaitē izmantots jaunākais kritēriju saraksts.', st(NOTE)); r2++;\n\nr2++;\nput(S2, r2, 1, 'Kā tiek aprēķināts rezultāts', st(SECTION)); r2++;\n[\n  '• Rezultāts = izpildīto kritēriju skaits / visu kritēriju skaits. Piemēram, 3 no 5 = 60%.',\n  '• Kritērijs tiek ieskaitīts tikai tad, ja sarunā tas skaidri izskan. Katram kritērijam AI pievieno citātu no sarunas.',\n  '• Tiek vērtēts tikai sarunas saturs — ne emocijas, ne balss tonis (ES Mākslīgā intelekta akts aizliedz darbinieku emociju atpazīšanu).',\n  '• Klienta lēmums rezultātu neietekmē: darbinieks var visu izdarīt pareizi, bet klients tik un tā var atteikties.',\n  '• Procentus aprēķina programma, nevis AI. AI vērtējums ir melnraksts — galīgo lēmumu pieņem vadītājs.'\n].forEach(function (t) { put(S2, r2, 1, t); r2++; });\n\nr2++;\nput(S2, r2, 1, 'Klienta lēmums', st(SECTION)); r2++;\nheaderRow(S2, r2, ['Lēmums', 'Nozīme', 'Zvani']); r2++;\n[\n  ['piekrita', 'Klients piekrita piedāvājumam vai turpināt procesu (piemēram, novērtējumam)'],\n  ['padomās', 'Klients vēlas padomāt vai lūdza laiku'],\n  ['atteicās', 'Klients atteicās'],\n  ['nav skaidrs', 'No sarunas nav skaidrs, ko klients nolēma']\n].forEach(function (o) {\n  put(S2, r2, 1, o[0], st(LINE, OUTCOME[o[0]] || {}, { bold: true }));\n  put(S2, r2, 2, o[1], st(LINE, WRAP));\n  put(S2, r2, 3, okRows.filter(function (r) { return r.call_outcome === o[0]; }).length, st(LINE, CENTER));\n  r2++;\n});\n\nr2++;\nput(S2, r2, 1, 'Krāsu nozīme', st(SECTION)); r2++;\n[\n  ['80–100%', GOOD, 'Rezultāts: labi'],\n  ['50–79%', MID, 'Rezultāts: vidēji'],\n  ['0–49%', BAD, 'Rezultāts: vāji'],\n  ['✔', GOOD, 'Kritērijs izpildīts'],\n  ['✘', BAD, 'Kritērijs nav izpildīts'],\n  ['kļūda', Object.assign({}, GREY, { color: '9C0006' }), 'Pelēka rinda — failu neizdevās apstrādāt (piemēram, bojāts vai neatbalstīts fails)']\n].forEach(function (c) {\n  put(S2, r2, 1, c[0], st(CENTER, c[1], { bold: true }));\n  put(S2, r2, 2, c[2]);\n  r2++;\n});\n\nr2++;\nput(S2, r2, 1, 'Zvana ilgums', st(SECTION)); r2++;\nput(S2, r2, 1, '• WAV failiem ilgums tiek nolasīts no faila — precīzi.'); r2++;\nput(S2, r2, 1, '• Citiem formātiem ilgums tiek aprēķināts aptuveni pēc vārdu skaita (~130 vārdi minūtē).');\n\n// ---------- Sheet 3: Zvani ----------\nconst zTitles = ['Datums', 'Augšupielādēts', 'Darbinieks', 'Fails', 'Valoda', 'Ilgums, min', 'Rezultāts', 'Izpildīti']\n  .concat(criteria.map(function (c) { return c.id + ' ' + c.short; }))\n  .concat(['Klienta lēmums', 'Lēmuma pamatojums', 'Neizpildītie kritēriji', 'Nākamais solis', 'Ko pārdod', 'Platība', 'Cenas gaidas', 'Kadastra nr.', 'Kopsavilkums']);\nS3.widths = [11, 16, 18, 30, 11, 9, 10, 9].concat(criteria.map(function () { return 14; })).concat([13, 34, 32, 40, 26, 16, 26, 14, 60]);\nheaderRow(S3, 1, zTitles, 45);\nrows.forEach(function (r, idx) {\n  const n = idx + 2;\n  const base = r._ok ? [LINE, WRAP] : [LINE, WRAP, GREY];\n  const cell = function (col, v, extra) { put(S3, n, col, v, st.apply(null, base.concat([extra || {}]))); };\n  const missedList = criteria.filter(function (c) { return r._byId[c.id] && !r._byId[c.id].met; }).map(function (c) { return c.id + ' ' + c.short; }).join(NL);\n  cell(1, str(r.call_date).slice(0, 10));\n  cell(2, str(r.uploaded_at));\n  cell(3, str(r.employee));\n  cell(4, str(r.file_name));\n  cell(5, str(r.language));\n  cell(6, r._ok ? Number(r.duration_min) || 0 : null);\n  if (r._ok) cell(7, scoreOf(r), Object.assign({}, scoreStyle(scoreOf(r)), PCT, CENTER, { bold: true }));\n  else cell(7, 'kļūda', { bold: true, color: '9C0006' });\n  cell(8, r._ok ? str(r.criteria_met) + ' no ' + str(r.criteria_total) : '—', CENTER);\n  criteria.forEach(function (c, j) {\n    const x = r._byId[c.id];\n    if (r._ok && x) cell(9 + j, x.met ? '✔' : '✘', Object.assign({}, x.met ? GOOD : BAD, CENTER));\n    else cell(9 + j, '—', CENTER);\n  });\n  const k = 9 + criteria.length;\n  cell(k, r._ok ? str(r.call_outcome) : '—', r._ok && OUTCOME[r.call_outcome] ? OUTCOME[r.call_outcome] : {});\n  cell(k + 1, r._ok ? cut(r.outcome_evidence) : '—');\n  cell(k + 2, r._ok ? (missedList || '—') : '—');\n  cell(k + 3, r._ok ? cut(r.next_step) : '—');\n  cell(k + 4, str(r.what_is_sold));\n  cell(k + 5, str(r.property_area));\n  cell(k + 6, str(r.price_expectation));\n  cell(k + 7, str(r.cadastral_number));\n  cell(k + 8, cut(r.summary));\n});\nS3.freeze = { row: 1, col: 3 };\nif (rows.length) S3.filter = 'A1:' + colName(zTitles.length) + (rows.length + 1);\n\n// ---------- Sheet 4: Detaļas ----------\nconst dTitles = ['Datums', 'Darbinieks', 'Fails']\n  .concat(criteria.map(function (c) { return c.id + ' ' + c.short + ' — citāts'; }))\n  .concat(['Ko izdarīja labi', 'Ko aizmirsa (AI komentārs)', 'Klienta lēmuma pamatojums', 'Atšifrējums']);\nS4.widths = [11, 18, 30].concat(criteria.map(function () { return 38; })).concat([45, 45, 35, 90]);\nheaderRow(S4, 1, dTitles, 45);\nrows.forEach(function (r, idx) {\n  const n = idx + 2;\n  const base = r._ok ? [LINE, WRAP] : [LINE, WRAP, GREY];\n  const cell = function (col, v, extra) { put(S4, n, col, v, st.apply(null, base.concat([extra || {}]))); };\n  cell(1, str(r.call_date).slice(0, 10));\n  cell(2, str(r.employee));\n  cell(3, str(r.file_name));\n  criteria.forEach(function (c, j) {\n    const x = r._byId[c.id];\n    if (r._ok && x) cell(4 + j, (x.met ? '✔ ' : '✘ ') + x.quote, x.met ? GOOD : BAD);\n    else cell(4 + j, '—');\n  });\n  const k = 4 + criteria.length;\n  cell(k, cut(r.strengths));\n  cell(k + 1, cut(r.missed));\n  cell(k + 2, cut(r.outcome_evidence));\n  cell(k + 3, cut(r.transcript || r.summary));\n});\nS4.freeze = { row: 1, col: 3 };\nif (rows.length) S4.filter = 'A1:' + colName(dTitles.length) + (rows.length + 1);\n\n// ---------- Email summary (HTML) ----------\nconst escH = function (v) { return str(v).split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;'); };\nconst badge = function (p) {\n  const s = scoreStyle(p);\n  return `<span style='background:#${s.fill};color:#${s.color};padding:2px 8px;border-radius:10px;font-weight:bold'>${Math.round(p * 100)}%</span>`;\n};\nconst td = function (content, extra) { return `<td style='padding:6px 10px;border-bottom:1px solid #e5e5e5;${extra || ''}'>${content}</td>`; };\nconst th = function (content) { return `<th style='padding:6px 10px;background:#1F3A5F;color:#ffffff;text-align:left'>${content}</th>`; };\nconst countOutcome = function (list, o) { return list.filter(function (r) { return r.call_outcome === o; }).length; };\n\nconst eTotalMin = minutesOf(okRows);\nconst eAvg = avgScoreOf(okRows);\nlet html = `<div style='font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222222;max-width:720px'>`;\nhtml += `<h2 style='color:#1F3A5F;margin:0 0 4px'>Zvanu kopsavilkums</h2>`;\nhtml += `<p style='color:#666666;margin:0 0 16px'>${escH(periodText)}${empFilter ? ' · ' + escH(empFilter) : ''}</p>`;\nif (!rows.length) {\n  html += `<p><b>Šajā periodā nav neviena apstrādāta zvana.</b></p>`;\n} else {\n  html += `<table style='border-collapse:collapse;margin-bottom:16px'>`;\n  html += `<tr>${td('Apstrādāti zvani')}${td('<b>' + okRows.length + '</b> no ' + rows.length)}</tr>`;\n  html += `<tr>${td('Kopējais ilgums')}${td('<b>' + eTotalMin + ' min</b>')}</tr>`;\n  html += `<tr>${td('Vidējais rezultāts')}${td(okRows.length ? badge(eAvg) : '—')}</tr>`;\n  html += `<tr>${td('Klientu lēmumi')}${td('piekrita <b>' + countOutcome(okRows, 'piekrita') + '</b> · padomās <b>' + countOutcome(okRows, 'padomās') + '</b> · atteicās <b>' + countOutcome(okRows, 'atteicās') + '</b> · nav skaidrs <b>' + countOutcome(okRows, 'nav skaidrs') + '</b>')}</tr>`;\n  if (failedRows.length) html += `<tr>${td('Neizdevās apstrādāt', 'color:#9C0006')}${td('<b>' + failedRows.length + '</b>: ' + escH(failedRows.map(function (r) { return r.file_name; }).join(', ')), 'color:#9C0006')}</tr>`;\n  html += `</table>`;\n\n  const emps = [];\n  okRows.forEach(function (r) { if (emps.indexOf(str(r.employee)) < 0) emps.push(str(r.employee)); });\n  emps.sort();\n  if (emps.length) {\n    html += `<h3 style='color:#1F3A5F;margin:16px 0 6px'>Pa darbiniekiem</h3><table style='border-collapse:collapse;width:100%'>`;\n    html += `<tr>${th('Darbinieks')}${th('Zvani')}${th('Ilgums, min')}${th('Vid. rezultāts')}${th('Piekrita')}${th('Padomās')}${th('Atteicās')}</tr>`;\n    emps.forEach(function (e) {\n      const list = okRows.filter(function (r) { return str(r.employee) === e; });\n      html += `<tr>${td(escH(e))}${td(list.length)}${td(minutesOf(list))}${td(badge(avgScoreOf(list)))}${td(countOutcome(list, 'piekrita'))}${td(countOutcome(list, 'padomās'))}${td(countOutcome(list, 'atteicās'))}</tr>`;\n    });\n    html += `</table>`;\n  }\n\n  const missedStats = stats.filter(function (s) { return s.missed > 0; });\n  html += `<h3 style='color:#1F3A5F;margin:16px 0 6px'>Neizpildītie kritēriji</h3>`;\n  if (!missedStats.length) {\n    html += `<p>Visi kritēriji izpildīti visos zvanos.</p>`;\n  } else {\n    html += `<ul style='margin:0;padding-left:20px'>`;\n    missedStats.forEach(function (s) {\n      html += `<li><b>${escH(s.c.id + ' ' + s.c.short)}</b> — ${s.missed} no ${s.judged} zvaniem (${escH(s.who.join(', '))})</li>`;\n    });\n    html += `</ul>`;\n  }\n\n  const low = okRows.filter(function (r) { return scoreOf(r) < 0.5; });\n  if (low.length) {\n    html += `<h3 style='color:#1F3A5F;margin:16px 0 6px'>Zvani ar rezultātu zem 50%</h3><ul style='margin:0;padding-left:20px'>`;\n    low.forEach(function (r) {\n      const missed = criteria.filter(function (c) { return r._byId[c.id] && !r._byId[c.id].met; }).map(function (c) { return c.id; }).join(', ');\n      html += `<li>${escH(r.employee)} · ${escH(r.file_name)} · ${badge(scoreOf(r))}${missed ? ' · neizpildīti: ' + escH(missed) : ''}</li>`;\n    });\n    html += `</ul>`;\n  }\n}\nhtml += `<p style='color:#666666;font-size:12px;margin-top:20px'>Pilna atskaite ar kritērijiem, citātiem un atšifrējumiem — pielikumā (Excel).<br>AI vērtējums ir melnraksts — galīgo lēmumu pieņem vadītājs.</p></div>`;\nconst emailSubject = rows.length\n  ? 'Zvanu kopsavilkums ' + periodText + ': ' + okRows.length + ' zvani, vidēji ' + Math.round(eAvg * 100) + '%'\n  : 'Zvanu kopsavilkums ' + periodText + ': nav zvanu';\n\n// ---------- Build XLSX package ----------\nconst sheetXml = function (sh, selected) {\n  let view = `<sheetView workbookViewId='0'${selected ? ` tabSelected='1'` : ''}`;\n  if (sh.freeze) {\n    const tl = colName(sh.freeze.col + 1) + (sh.freeze.row + 1);\n    const pane = sh.freeze.col && sh.freeze.row ? 'bottomRight' : sh.freeze.row ? 'bottomLeft' : 'topRight';\n    view += `><pane${sh.freeze.col ? ` xSplit='${sh.freeze.col}'` : ''}${sh.freeze.row ? ` ySplit='${sh.freeze.row}'` : ''} topLeftCell='${tl}' activePane='${pane}' state='frozen'/><selection pane='${pane}' activeCell='${tl}' sqref='${tl}'/></sheetView>`;\n  } else {\n    view += '/>';\n  }\n  const cols = sh.widths.length ? `<cols>${sh.widths.map(function (w, i) { return `<col min='${i + 1}' max='${i + 1}' width='${w}' customWidth='1'/>`; }).join('')}</cols>` : '';\n  const parts = [];\n  Object.keys(sh.cells).map(Number).sort(function (a, b) { return a - b; }).forEach(function (r) {\n    const cells = sh.cells[r];\n    const ht = sh.heights[r] ? ` ht='${sh.heights[r]}' customHeight='1'` : '';\n    parts.push(`<row r='${r}'${ht}>`);\n    Object.keys(cells).map(Number).sort(function (a, b) { return a - b; }).forEach(function (c) {\n      const cell = cells[c];\n      const ref = colName(c) + r;\n      const s = cell.s ? ` s='${cell.s}'` : '';\n      if (cell.v === null || cell.v === undefined || cell.v === '') parts.push(`<c r='${ref}'${s}/>`);\n      else if (typeof cell.v === 'number' && isFinite(cell.v)) parts.push(`<c r='${ref}'${s}><v>${cell.v}</v></c>`);\n      else parts.push(`<c r='${ref}'${s} t='inlineStr'><is><t xml:space='preserve'>${xmlEsc(cell.v)}</t></is></c>`);\n    });\n    parts.push('</row>');\n  });\n  const filter = sh.filter ? `<autoFilter ref='${sh.filter}'/>` : '';\n  const merges = sh.merges.length ? `<mergeCells count='${sh.merges.length}'>${sh.merges.map(function (m) { return `<mergeCell ref='${m}'/>`; }).join('')}</mergeCells>` : '';\n  const links = sh.links.length ? `<hyperlinks>${sh.links.map(function (l) { return `<hyperlink ref='${l.ref}' location='${xmlEsc(l.location)}' display='${xmlEsc(l.display)}'/>`; }).join('')}</hyperlinks>` : '';\n  return `<worksheet xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main' xmlns:r='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><sheetViews>${view}</sheetViews><sheetFormatPr defaultRowHeight='15'/>${cols}<sheetData>${parts.join('')}</sheetData>${filter}${merges}${links}</worksheet>`;\n};\n\nconst NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';\nconst NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';\nconst NS_PKG = 'http://schemas.openxmlformats.org/package/2006/relationships';\nconst XML_HEAD = '<?xml version=' + DQ + '1.0' + DQ + ' encoding=' + DQ + 'UTF-8' + DQ + ' standalone=' + DQ + 'yes' + DQ + '?>';\nconst finalize = function (xml) { return XML_HEAD + xml.split(SQ).join(DQ); };\n\nconst absRef = function (ref) {\n  let letters = '';\n  let digits = '';\n  for (const ch of ref) { if (ch >= '0' && ch <= '9') digits += ch; else letters += ch; }\n  return '$' + letters + '$' + digits;\n};\nconst definedNames = [];\nsheets.forEach(function (sh, i) {\n  if (!sh.filter) return;\n  const p = sh.filter.split(':');\n  definedNames.push(`<definedName name='_xlnm._FilterDatabase' localSheetId='${i}' hidden='1'>${xmlEsc(SQ + sh.name + SQ + '!' + absRef(p[0]) + ':' + absRef(p[1]))}</definedName>`);\n});\n\nconst sheetFiles = sheets.map(function (sh, i) { return { name: 'xl/worksheets/sheet' + (i + 1) + '.xml', content: finalize(sheetXml(sh, i === 0)) }; });\nconst workbookXml = `<workbook xmlns='${NS_MAIN}' xmlns:r='${NS_REL}'><bookViews><workbookView activeTab='0'/></bookViews><sheets>${sheets.map(function (sh, i) { return `<sheet name='${xmlEsc(sh.name)}' sheetId='${i + 1}' r:id='rId${i + 1}'/>`; }).join('')}</sheets>${definedNames.length ? `<definedNames>${definedNames.join('')}</definedNames>` : ''}</workbook>`;\nconst workbookRels = `<Relationships xmlns='${NS_PKG}'>${sheets.map(function (sh, i) { return `<Relationship Id='rId${i + 1}' Type='${NS_REL}/worksheet' Target='worksheets/sheet${i + 1}.xml'/>`; }).join('')}<Relationship Id='rId${sheets.length + 1}' Type='${NS_REL}/styles' Target='styles.xml'/></Relationships>`;\nconst rootRels = `<Relationships xmlns='${NS_PKG}'><Relationship Id='rId1' Type='${NS_REL}/officeDocument' Target='xl/workbook.xml'/></Relationships>`;\nconst contentTypes = `<Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'><Default Extension='rels' ContentType='application/vnd.openxmlformats-package.relationships+xml'/><Default Extension='xml' ContentType='application/xml'/><Override PartName='/xl/workbook.xml' ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'/>${sheets.map(function (sh, i) { return `<Override PartName='/xl/worksheets/sheet${i + 1}.xml' ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml'/>`; }).join('')}<Override PartName='/xl/styles.xml' ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'/></Types>`;\nconst stylesXml = `<styleSheet xmlns='${NS_MAIN}'><fonts count='${fontList.length}'>${fontList.join('')}</fonts><fills count='${fillList.length}'>${fillList.join('')}</fills><borders count='${borderList.length}'>${borderList.join('')}</borders><cellStyleXfs count='1'><xf numFmtId='0' fontId='0' fillId='0' borderId='0'/></cellStyleXfs><cellXfs count='${xfList.length}'>${xfList.join('')}</cellXfs><cellStyles count='1'><cellStyle name='Normal' xfId='0' builtinId='0'/></cellStyles></styleSheet>`;\n\nconst files = [\n  { name: '[Content_Types].xml', content: finalize(contentTypes) },\n  { name: '_rels/.rels', content: finalize(rootRels) },\n  { name: 'xl/workbook.xml', content: finalize(workbookXml) },\n  { name: 'xl/_rels/workbook.xml.rels', content: finalize(workbookRels) },\n  { name: 'xl/styles.xml', content: finalize(stylesXml) }\n].concat(sheetFiles);\n\nconst utf8 = function (s) {\n  const out = [];\n  for (let i = 0; i < s.length; i++) {\n    let code = s.charCodeAt(i);\n    if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {\n      const next = s.charCodeAt(i + 1);\n      if (next >= 0xdc00 && next <= 0xdfff) { code = 0x10000 + ((code - 0xd800) << 10) + (next - 0xdc00); i++; }\n    }\n    if (code < 0x80) out.push(code);\n    else if (code < 0x800) out.push(0xc0 | (code >> 6), 0x80 | (code & 63));\n    else if (code < 0x10000) out.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 63), 0x80 | (code & 63));\n    else out.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 63), 0x80 | ((code >> 6) & 63), 0x80 | (code & 63));\n  }\n  return out;\n};\nconst crcTable = [];\nfor (let n = 0; n < 256; n++) {\n  let c = n;\n  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;\n  crcTable.push(c >>> 0);\n}\nconst crc32 = function (bytes) {\n  let c = 0xffffffff;\n  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 255] ^ (c >>> 8);\n  return (c ^ 0xffffffff) >>> 0;\n};\nconst u16 = function (arr, v) { arr.push(v & 255, (v >>> 8) & 255); };\nconst u32 = function (arr, v) { arr.push(v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255); };\nconst pushBytes = function (target, src) { for (let i = 0; i < src.length; i++) target.push(src[i]); };\nconst zip = function (list) {\n  const out = [];\n  const central = [];\n  list.forEach(function (f) {\n    const name = utf8(f.name);\n    const data = utf8(f.content);\n    const crc = crc32(data);\n    const offset = out.length;\n    u32(out, 0x04034b50); u16(out, 20); u16(out, 0x0800); u16(out, 0); u16(out, 0); u16(out, 0x21);\n    u32(out, crc); u32(out, data.length); u32(out, data.length); u16(out, name.length); u16(out, 0);\n    pushBytes(out, name);\n    pushBytes(out, data);\n    u32(central, 0x02014b50); u16(central, 20); u16(central, 20); u16(central, 0x0800); u16(central, 0); u16(central, 0); u16(central, 0x21);\n    u32(central, crc); u32(central, data.length); u32(central, data.length); u16(central, name.length);\n    u16(central, 0); u16(central, 0); u16(central, 0); u16(central, 0); u32(central, 0); u32(central, offset);\n    pushBytes(central, name);\n  });\n  const cdOffset = out.length;\n  pushBytes(out, central);\n  u32(out, 0x06054b50); u16(out, 0); u16(out, 0); u16(out, list.length); u16(out, list.length); u32(out, central.length); u32(out, cdOffset); u16(out, 0);\n  return out;\n};\nconst B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';\nconst base64 = function (bytes) {\n  const parts = [];\n  for (let i = 0; i < bytes.length; i += 3) {\n    const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;\n    const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;\n    const n = (bytes[i] << 16) | (b1 << 8) | b2;\n    parts.push(B64.charAt((n >> 18) & 63) + B64.charAt((n >> 12) & 63) + (i + 1 < bytes.length ? B64.charAt((n >> 6) & 63) : '=') + (i + 2 < bytes.length ? B64.charAt(n & 63) : '='));\n  }\n  return parts.join('');\n};\n\nconst bytes = zip(files);\nreturn [{\n  json: {\n    file_base64: base64(bytes),\n    file_name: 'zvanu_atskaite_' + (dates.length ? rangeText(dates[0], dates[dates.length - 1]).split(' — ').join('_') : nowRiga.toFormat('yyyy-LL-dd')) + '.xlsx',\n    calls_total: rows.length,\n    calls_ok: okRows.length,\n    avg_score_percent: okRows.length ? Math.round(eAvg * 100) : null,\n    period_text: periodText,\n    email_subject: emailSubject,\n    summary_html: html\n  }\n}];"
+      },
+      "id": "58c30bb1-149a-48af-8662-6294a9656710",
+      "name": "Build Excel Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "file_base64",
+        "options": {
+          "fileName": "={{ $json.file_name }}",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }
+      },
+      "id": "d12fa99f-c1ae-4776-917a-c44f538bb2f3",
+      "name": "Convert to Excel File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1680,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const built = $('Build Excel Report').all();\nreturn $input.all().map(function (item, i) {\n  const src = built[i] ? built[i].json : {};\n  const out = {};\n  Object.keys(src).forEach(function (k) { if (k !== 'file_base64') out[k] = src[k]; });\n  return { json: out, binary: item.binary };\n});"
+      },
+      "id": "bf1212ca-6b10-4800-a279-454828ee54e3",
+      "name": "Attach Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('Report Request').first().json.run_type }}",
+              "rightValue": "email",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1b2d0f17-7aae-4d47-9833-72a4b29038d4",
+      "name": "Email Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2160,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Email Settings').first().json.manager_email }}",
+        "subject": "={{ $json.email_subject }}",
+        "message": "={{ $json.summary_html }}",
+        "options": {
+          "appendAttribution": false,
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {}
+            ]
+          }
+        }
+      },
+      "id": "0dda6abe-3cca-406b-b0ba-a5a087d6ef49",
+      "name": "Email Manager",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2400,
+        848
+      ],
+      "webhookId": "898f4dac-01ff-4cc5-98ff-41ac48450ca3"
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "returnBinary",
+        "completionTitle": "Atskaite ir gatava",
+        "completionMessage": "Excel fails tiek lejupielādēts.",
+        "options": {}
+      },
+      "id": "0323eb54-b556-444e-b650-fb29c984c507",
+      "name": "Download Excel",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.5,
+      "position": [
+        2400,
+        1040
+      ],
+      "webhookId": "b76a592b-9097-4ad3-8dec-824a08ddfd2d"
+    },
+    {
+      "parameters": {
+        "content": "## Zvanu kvalitātes analīze — viss vienā darbplūsmā\n**Uzstādīšana:**\n1. Importējiet šo failu (⋯ → Import from File)\n2. Mezglos ar brīdinājumu izvēlieties kontus: **Transcribe Call** → OpenAI, **Claude Model** → Anthropic, **Email Manager** → Gmail\n3. Mezglā **Email Settings** ierakstiet vadītāja e-pastu\n4. Nospiediet **Publish**\n\nZvanu tabula **call_reviews** tiek izveidota automātiski.\nKritērijus maina mezglā **Review Criteria** (formāts: ID | kritērijs).",
+        "color": 4
+      },
+      "id": "1e1a666f-90f1-42b5-902f-cfebf351fba4",
+      "name": "Sticky Note 808bd36b",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        112,
+        304
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Call Upload Form": {
+      "main": [
+        [
+          {
+            "node": "Ensure Call Table",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Files": {
+      "main": [
+        [
+          {
+            "node": "Transcribe Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe Call": {
+      "main": [
+        [
+          {
+            "node": "Review Criteria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Criteria": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Call": {
+      "main": [
+        [
+          {
+            "node": "Calculate Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Evaluate Call",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Score": {
+      "main": [
+        [
+          {
+            "node": "Save to Data Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Data Table": {
+      "main": [
+        [
+          {
+            "node": "Build Summary Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Summary Page": {
+      "main": [
+        [
+          {
+            "node": "Show Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Export Form": {
+      "main": [
+        [
+          {
+            "node": "Report Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Request": {
+      "main": [
+        [
+          {
+            "node": "Ensure Call Table",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Call Reviews",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every Day 18:00": {
+      "main": [
+        [
+          {
+            "node": "Email Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Settings": {
+      "main": [
+        [
+          {
+            "node": "Report Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Test Now": {
+      "main": [
+        [
+          {
+            "node": "Email Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Call Reviews": {
+      "main": [
+        [
+          {
+            "node": "Align Criteria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Align Criteria": {
+      "main": [
+        [
+          {
+            "node": "Build Excel Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Excel Report": {
+      "main": [
+        [
+          {
+            "node": "Convert to Excel File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to Excel File": {
+      "main": [
+        [
+          {
+            "node": "Attach Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Summary": {
+      "main": [
+        [
+          {
+            "node": "Email Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Run?": {
+      "main": [
+        [
+          {
+            "node": "Email Manager",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true,
+    "timezone": "Europe/Riga"
+  },
+  "versionId": "44b51ea8-075b-4873-a384-844aa60076ce",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "e3a338208f6bef7e970467953d794daf25e542a8510d7919b87bc393012ca4e0"
+  },
+  "nodeGroups": [],
+  "id": "SVZNzVmDIidncejo",
+  "tags": []
+}
