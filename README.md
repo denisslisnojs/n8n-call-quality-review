@@ -1,3 +1,5 @@
+![Call quality review: sales calls to scores to daily report](assets/banner.svg)
+
 # n8n call quality review
 
 An n8n workflow that reviews sales calls automatically. Each recording is transcribed and scored against a checklist, the results are saved to a table, and every day at 18:00 the manager gets an email summary with an Excel report.
